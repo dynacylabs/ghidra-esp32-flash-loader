@@ -3,8 +3,6 @@ package esp32_loader;
 import java.awt.*;
 import java.awt.event.ItemEvent;
 import java.awt.event.ItemListener;
-import java.util.ArrayList;
-
 import docking.widgets.combobox.GComboBox;
 import esp32_loader.flash.ESP32Flash;
 import ghidra.app.util.Option;
@@ -16,12 +14,13 @@ public class PartitionOption extends Option implements ItemListener {
 
 	public PartitionOption(ESP32Flash parsedFlash) {
 		super("App Partition", "factory", String.class, "-partition");
+		this.setValue(this.processPartitions(parsedFlash));
 		// TODO Auto-generated constructor stub
 		this.parsedFlash = parsedFlash;
 	}
 
-	@Override
-	public Component getCustomEditorComponent() {
+	private String processPartitions(ESP32Flash parsedFlash) {
+		var defaultSelection = "";
 
 		if (parsedFlash.SecondaryBootloader != null) {
 			cb.addItem("Bootloader");
@@ -46,13 +45,18 @@ public class PartitionOption extends Option implements ItemListener {
 				}
 			}
 
-			cb.setSelectedItem(parsedFlash.Partitions.get(0));
+			var firstPartition = parsedFlash.Partitions.get(0);
+			cb.setSelectedItem(firstPartition);
 			cb.addItemListener(this);
 
-			return cb;
+			defaultSelection = cb.getItemAt(0);
 		}
+		return defaultSelection;
+	}
 
-		return null;
+	@Override
+	public Component getCustomEditorComponent() {
+		return this.cb;
 	}
 
 	public void itemStateChanged(ItemEvent evt) {
