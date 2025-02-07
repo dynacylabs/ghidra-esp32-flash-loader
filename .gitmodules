@@ -1,0 +1,4 @@
+[submodule "ghidra_scripts"]
+	path = ghidra_scripts
+	url = git@github.com:austinc3030/SVD-Loader-Ghidra.git
+	branch = master

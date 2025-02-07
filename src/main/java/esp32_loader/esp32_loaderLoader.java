@@ -200,7 +200,7 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
 			if (imageToLoad.IsEsp32S2) {
 				log.appendMsg("Process esp32s2 svd");
 			}
-			processSVD(program, api, imageToLoad.IsEsp32S2);
+			processSVD(program, api, imageToLoad.IsEsp32S2, log);
 
 		} catch (Exception e) {
 			log.appendException(e);
@@ -230,7 +230,7 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
 		}
 	}
 
-	private void processSVD(Program program, FlatProgramAPI api, boolean isESP32S2) throws Exception {
+	private void processSVD(Program program, FlatProgramAPI api, boolean isESP32S2, MessageLog log) throws Exception {
 		// TODO Auto-generated method stub
 		List<ResourceFile> svdFileList = Application.findFilesByExtensionInMyModule("svd");
 		if (svdFileList.size() > 0) {
@@ -255,12 +255,12 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
 
 			NodeList peripherals = root.getElementsByTagName("peripheral");
 			for (var x = 0; x < peripherals.getLength(); x++) {
-				processPeripheral(program, api, (Element) peripherals.item(x));
+				processPeripheral(program, api, (Element) peripherals.item(x), log);
 			}
 		}
 	}
 
-	private void processPeripheral(Program program, FlatProgramAPI api, Element peripheral)
+	private void processPeripheral(Program program, FlatProgramAPI api, Element peripheral, MessageLog log)
 			throws DuplicateNameException, InvalidInputException, CodeUnitInsertionException, LockException,
 			MemoryConflictException, AddressOverflowException {
 		String baseAddrString = ((Element) (peripheral.getElementsByTagName("baseAddress").item(0))).getTextContent();
@@ -276,14 +276,17 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
 
 		NodeList registers = peripheral.getElementsByTagName("register");
 
-		for (var x = 0; x < registers.getLength(); x++) {
-			Element register = (Element) registers.item(x);
-			String registerName = ((Element) (register.getElementsByTagName("name").item(0))).getTextContent();
-			String offsetString = ((Element) (register.getElementsByTagName("addressOffset").item(0))).getTextContent();
-			int offsetValue = Integer.decode(offsetString);
+		try {
+			for (var x = 0; x < registers.getLength(); x++) {
+				Element register = (Element) registers.item(x);
+				String registerName = ((Element) (register.getElementsByTagName("name").item(0))).getTextContent();
+				String offsetString = ((Element) (register.getElementsByTagName("addressOffset").item(0))).getTextContent();
+				int offsetValue = Integer.decode(offsetString);
+				struct.replaceAtOffset(offsetValue, new UnsignedLongDataType(), 4, registerName, "");
 
-			struct.replaceAtOffset(offsetValue, new UnsignedLongDataType(), 4, registerName, "");
-
+			}
+		} catch (Exception e) {
+			log.appendException(e);
 		}
 
 		var dtm = program.getDataTypeManager();

@@ -1,3 +1,4 @@
+
 # flash loader plugin for ghidra
 
 Build with gradle
@@ -15,3 +16,4 @@ TODO, Use Dockerfile from here https://github.com/blacktop/docker-ghidra to buil
 If loading an elf file, load svd manually before doing analysis
 
 https://leveldown.de/blog/svd-loader/
+
