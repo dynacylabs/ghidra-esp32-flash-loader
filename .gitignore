@@ -21,7 +21,7 @@ tmp/
 *.bak
 *.swp
 *~.nib
-local.properties
+gradle.properties
 .settings/
 .loadpath
 .recommenders
@@ -73,7 +73,7 @@ local.properties
 
 # Uncomment this line if you wish to ignore the project description file.
 # Typically, this file would be tracked if it contains build/dependency configurations:
-#.project
+.project
 
 # Compiled class file
 *.class
@@ -99,3 +99,4 @@ local.properties
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 
+.idea

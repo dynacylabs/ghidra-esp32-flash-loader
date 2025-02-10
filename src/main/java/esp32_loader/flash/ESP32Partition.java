@@ -1,41 +1,45 @@
 package esp32_loader.flash;
 
-import java.io.IOException;
-
 import ghidra.app.util.bin.BinaryReader;
 import ghidra.app.util.bin.ByteArrayProvider;
+import ghidra.app.util.importer.MessageLog;
+
+import java.io.IOException;
 
 public class ESP32Partition {
-	public String Name;
-	public byte Type;
-	public byte SubType;
-	public int Offset;
-	public int Length;
-	public byte[] Data;
+    public String Name;
+    public byte Type;
+    public byte SubType;
+    public int Offset;
+    public int Length;
+    public byte[] Data;
 
-	public ESP32Partition(BinaryReader reader) throws IOException {
-		// TODO Auto-generated constructor stub
+    public ESP32Partition(BinaryReader reader) throws IOException {
+        reader.readNextShort(); // magic
+        Type = reader.readNextByte();
+        SubType = reader.readNextByte();
+        Offset = reader.readNextInt();
+        Length = reader.readNextInt();
+        Name = reader.readNextAsciiString(20);
+        Data = reader.readByteArray(Offset, Length);
+    }
 
-		reader.readNextShort(); // magic
-		Type = reader.readNextByte();
-		SubType = reader.readNextByte();
-		Offset = reader.readNextInt();
-		Length = reader.readNextInt();
-		Name = reader.readNextAsciiString(20);
-		Data = reader.readByteArray(Offset, Length);
-	}
+    public ESP32AppImage ParseAppImage(MessageLog log) throws Exception {
+        if (Byte.toUnsignedInt(Data[0]) != 0xE9) {
+            /* E9 is the magic for an app image, this doesn't have it... */
+            throw new Exception("Selected Partition is not a valid App Image");
+        }
 
-	public ESP32AppImage ParseAppImage() throws Exception {
-		// TODO Auto-generated method stub
+        ByteArrayProvider dataProv = new ByteArrayProvider(Data);
 
-		if (Byte.toUnsignedInt(Data[0]) != 0xE9) {
-			/* E9 is the magic for an app image, this doesn't have it... */
-			throw new Exception("Selected Partition is not a valid App Image");
-		}
+        var appImage = new ESP32AppImage(new BinaryReader(dataProv, true), log);
 
-		ByteArrayProvider dataProv = new ByteArrayProvider(Data);
+        // Correct the physical offsets of the segments based on the partition offset
+        for (var seg : appImage.Segments) {
+            seg.PhysicalOffset += Offset;
+        }
 
-		return new ESP32AppImage(new BinaryReader(dataProv, true));
-	}
+        return appImage;
+    }
 
 }
