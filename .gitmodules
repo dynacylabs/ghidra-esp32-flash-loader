@@ -1,7 +1,3 @@
-[submodule "data/svd"]
-	path = data/svd
-	url = git@github.com:espressif/svd.git
-
 [submodule "ghidra_scripts"]
 	path = ghidra_scripts
 	url = git@github.com:austinc3030/SVD-Loader-Ghidra.git
