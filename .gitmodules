@@ -1,3 +1,6 @@
 [submodule "data/svd"]
 	path = data/svd
 	url = https://github.com/espressif/svd.git
+[submodule "ghidra_scripts"]
+	path = ghidra_scripts
+	url = https://github.com/dynacylabs/ghidra-svd-loader.git
