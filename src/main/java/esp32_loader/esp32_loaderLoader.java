@@ -165,60 +165,66 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
             for (var x = 0; x < imageToLoad.SegmentCount; x++) {
                 var curSeg = imageToLoad.Segments.get(x);
 
-                FileBytes fileBytes = MemoryBlockUtils.createFileBytes(program,
-                                                                       provider,
-                                                                       curSeg.PhysicalDataOffset(),
-                                                                       curSeg.Length,
-                                                                       monitor);
+                try {
 
-                if (!program.getMemory().contains(api.toAddr(curSeg.LoadAddress),
-                                                  api.toAddr(curSeg.LoadAddress + curSeg.Length))
-                ) {
-                    var blockName = imageName +
-                                    "_" +
-                                    curSeg.type.name() +
-                                    "_" +
-                                    Integer.toHexString(curSeg.LoadAddress);
-                    var memBlock = program.getMemory().createInitializedBlock(blockName, api.toAddr(curSeg.LoadAddress),
-                                                                              fileBytes, 0x00, curSeg.Length, false);
-                    memBlock.setPermissions(curSeg.isRead(), curSeg.isWrite(), curSeg.isExecute());
-                    memBlock.setVolatile(curSeg.isVolatile());
-                    memBlock.setSourceName("ESP32 Loader");
+                    FileBytes fileBytes = MemoryBlockUtils.createFileBytes(program,
+                                                                        provider,
+                                                                        curSeg.PhysicalDataOffset(),
+                                                                        curSeg.Length,
+                                                                        monitor);
 
-                } else {
-                    /* memory block already exists... */
-                    MemoryBlock existingBlock = program.getMemory().getBlock(api.toAddr(curSeg.LoadAddress));
-                    if (existingBlock != null) {
-                        existingBlock.setName(imageName +
-                                              "_" +
-                                              curSeg.type.name() +
-                                              "_" +
-                                              Integer.toHexString(curSeg.LoadAddress));
+                    if (!program.getMemory().contains(api.toAddr(curSeg.LoadAddress),
+                                                    api.toAddr(curSeg.LoadAddress + curSeg.Length))
+                    ) {
+                        var blockName = imageName +
+                                        "_" +
+                                        curSeg.type.name() +
+                                        "_" +
+                                        Integer.toHexString(curSeg.LoadAddress);
+                        var memBlock = program.getMemory().createInitializedBlock(blockName, api.toAddr(curSeg.LoadAddress),
+                                                                                fileBytes, 0x00, curSeg.Length, false);
+                        memBlock.setPermissions(curSeg.isRead(), curSeg.isWrite(), curSeg.isExecute());
+                        memBlock.setVolatile(curSeg.isVolatile());
+                        memBlock.setSourceName("ESP32 Loader");
 
-                        if (!existingBlock.isInitialized()) {
-                            program.getMemory().convertToInitialized(existingBlock, (byte) 0x0);
-                        }
-
-                        try {
-                            existingBlock.putBytes(api.toAddr(curSeg.LoadAddress), curSeg.Data);
-                        } catch (Exception ex) {
-                            log.appendException(ex);
-                        }
-
-                        existingBlock.setSourceName(existingBlock.getSourceName() + " + ESP32 Loader");
                     } else {
-                        /*
-                         * whoa, there be dragons here, the block exists but doesn't contain our start
-                         * address... what?
-                         */
+                        /* memory block already exists... */
+                        MemoryBlock existingBlock = program.getMemory().getBlock(api.toAddr(curSeg.LoadAddress));
+                        if (existingBlock != null) {
+                            existingBlock.setName(imageName +
+                                                "_" +
+                                                curSeg.type.name() +
+                                                "_" +
+                                                Integer.toHexString(curSeg.LoadAddress));
+
+                            if (!existingBlock.isInitialized()) {
+                                program.getMemory().convertToInitialized(existingBlock, (byte) 0x0);
+                            }
+
+                            try {
+                                existingBlock.putBytes(api.toAddr(curSeg.LoadAddress), curSeg.Data);
+                            } catch (Exception ex) {
+                                log.appendException(ex);
+                            }
+
+                            existingBlock.setSourceName(existingBlock.getSourceName() + " + ESP32 Loader");
+                        } else {
+                            /*
+                            * whoa, there be dragons here, the block exists but doesn't contain our start
+                            * address... what?
+                            */
+                        }
                     }
-                }
 
-                /* Mark Instruction blocks as code */
-                if (curSeg.isCodeSegment()) {
-                    codeProp.add(api.toAddr(curSeg.LoadAddress), api.toAddr(curSeg.LoadAddress + curSeg.Length));
-                }
+                    /* Mark Instruction blocks as code */
+                    if (curSeg.isCodeSegment()) {
+                        codeProp.add(api.toAddr(curSeg.LoadAddress), api.toAddr(curSeg.LoadAddress + curSeg.Length));
+                    }
 
+                } catch (Exception segEx) {
+                    log.appendMsg("Failed to load segment index " + x + " at 0x" + Integer.toHexString(curSeg.LoadAddress));
+                    log.appendException(segEx);
+                }
             }
 
             /* set the entry point */
