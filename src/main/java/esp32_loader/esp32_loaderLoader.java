@@ -34,7 +34,9 @@ import ghidra.framework.model.DomainObject;
 import ghidra.framework.store.LockException;
 import ghidra.program.database.mem.FileBytes;
 import ghidra.program.flatapi.FlatProgramAPI;
+import ghidra.program.model.address.Address;
 import ghidra.program.model.address.AddressOverflowException;
+import ghidra.program.model.address.AddressSet;
 import ghidra.program.model.data.DataTypeConflictHandler;
 import ghidra.program.model.data.StructureDataType;
 import ghidra.program.model.data.UnsignedLongDataType;
@@ -107,7 +109,8 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
     }
 
     @Override
-    protected void load(ByteProvider provider, LoadSpec loadSpec, List<Option> options, Program program, TaskMonitor monitor, MessageLog log) {
+    protected void load(ByteProvider provider, LoadSpec loadSpec, List<Option> options, Program program,
+            TaskMonitor monitor, MessageLog log) {
         FlatProgramAPI api = new FlatProgramAPI(program);
 
         if (entryAppImage == null) {
@@ -127,7 +130,8 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
             processAppImage(program, entryAppImage, api, provider, monitor, log, "bootloader");
 
             /*
-             * they probably gave us a firmware file with a bootloader, lets load that and get the partition
+             * they probably gave us a firmware file with a bootloader, lets load that and
+             * get the partition
              * they selected
              */
             var partOpt = (String) (options.getFirst().getValue());
@@ -155,7 +159,8 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
         }
     }
 
-    private void processAppImage(Program program, ESP32AppImage imageToLoad, FlatProgramAPI api, ByteProvider provider, TaskMonitor monitor, MessageLog log, String imageName) {
+    private void processAppImage(Program program, ESP32AppImage imageToLoad, FlatProgramAPI api, ByteProvider provider,
+            TaskMonitor monitor, MessageLog log, String imageName) {
         try {
             AddressSetPropertyMap codeProp = program.getAddressSetPropertyMap("CodeMap");
             if (codeProp == null) {
@@ -166,43 +171,127 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
                 var curSeg = imageToLoad.Segments.get(x);
 
                 try {
+                    Address startSegAddr = api.toAddr(curSeg.LoadAddress);
+                    Address endSegAddr = startSegAddr.add(curSeg.Length - 1);
 
                     FileBytes fileBytes = MemoryBlockUtils.createFileBytes(program,
-                                                                        provider,
-                                                                        curSeg.PhysicalDataOffset(),
-                                                                        curSeg.Length,
-                                                                        monitor);
+                            provider,
+                            curSeg.PhysicalDataOffset(),
+                            curSeg.Length,
+                            monitor);
 
-                    if (!program.getMemory().contains(api.toAddr(curSeg.LoadAddress),
-                                                    api.toAddr(curSeg.LoadAddress + curSeg.Length))
-                    ) {
+                    // this checks if the ENTIRE block already exists, there is a chance that the
+                    // previous block only collides by a fraction
+                    if (!program.getMemory().contains(startSegAddr, endSegAddr)) {
                         var blockName = imageName +
-                                        "_" +
-                                        curSeg.type.name() +
-                                        "_" +
-                                        Integer.toHexString(curSeg.LoadAddress);
-                        var memBlock = program.getMemory().createInitializedBlock(blockName, api.toAddr(curSeg.LoadAddress),
-                                                                                fileBytes, 0x00, curSeg.Length, false);
-                        memBlock.setPermissions(curSeg.isRead(), curSeg.isWrite(), curSeg.isExecute());
-                        memBlock.setVolatile(curSeg.isVolatile());
-                        memBlock.setSourceName("ESP32 Loader");
+                                "_" +
+                                curSeg.type.name() +
+                                "_" +
+                                Integer.toHexString(curSeg.LoadAddress);
+
+                        // this try / catch will remove uninitialized memory if it collides with the
+                        // block being loaded
+                        try {
+                            var memBlock = program.getMemory().createInitializedBlock(blockName,
+                                    startSegAddr,
+                                    fileBytes, 0x00, curSeg.Length, false);
+                            memBlock.setPermissions(curSeg.isRead(), curSeg.isWrite(), curSeg.isExecute());
+                            memBlock.setVolatile(curSeg.isVolatile());
+                            memBlock.setSourceName("ESP32 Loader");
+
+                        } catch (ghidra.program.model.mem.MemoryConflictException memException) {
+                            log.appendMsg("MemoryConflictExcetion while loading segment index " + x);
+                            log.appendMsg("Searching for colliding blocks...");
+
+                            // search for the colliding block
+                            for (MemoryBlock block : program.getMemory().getBlocks()) {
+                                Address blockStartAddr = block.getStart();
+                                Address blockEndAddr = block.getEnd();
+
+                                if (blockStartAddr.compareTo(endSegAddr) <= 0
+                                        && blockEndAddr.compareTo(startSegAddr) >= 0) {
+
+                                    log.appendMsg(String.format("Found colliding block %s at start: 0x%X, end: 0x%X",
+                                            block.getName(), blockStartAddr.getOffset(), blockEndAddr.getOffset()));
+
+                                    if (!block.isInitialized()) {
+                                        log.appendMsg("Colliding block is uninitialized, trying to remove it");
+
+                                        // if block is completely inside, remove the block completely.
+                                        if ((blockStartAddr.compareTo(startSegAddr) >= 0)
+                                                && (blockEndAddr.compareTo(endSegAddr) <= 0)) {
+
+                                            program.getMemory().removeBlock(block, monitor);
+                                            log.appendMsg("Removed overlapped area");
+                                        }
+
+                                        // if block expands from the lower end, remove higher half.
+                                        else if ((blockStartAddr.compareTo(startSegAddr) < 0)
+                                                && (blockEndAddr.compareTo(startSegAddr) >= 0)
+                                                && (blockEndAddr.compareTo(endSegAddr) <= 0)) {
+
+                                            program.getMemory().split(block, startSegAddr);
+                                            program.getMemory().removeBlock(program.getMemory().getBlock(startSegAddr),
+                                                    monitor);
+                                            log.appendMsg("Removed overlapped area");
+
+                                        }
+
+                                        // if block expand from the higher end, remove lower half.
+                                        else if ((blockStartAddr.compareTo(startSegAddr) >= 0)
+                                                && (blockStartAddr.compareTo(endSegAddr) <= 0)
+                                                && (blockEndAddr.compareTo(endSegAddr) > 0)) {
+                                            program.getMemory().split(block, endSegAddr.add(1));
+                                            program.getMemory().removeBlock(program.getMemory().getBlock(endSegAddr),
+                                                    monitor);
+                                            log.appendMsg("Removed overlapped area");
+
+                                        }
+
+                                        // if block expands from the lower and higher end, make a hole and remove it.
+                                        else if ((blockStartAddr.compareTo(startSegAddr) < 0)
+                                                && (blockEndAddr.compareTo(endSegAddr) > 0)) {
+                                            program.getMemory().split(block, startSegAddr);
+                                            program.getMemory().split(program.getMemory().getBlock(startSegAddr),
+                                                    endSegAddr.add(1));
+                                            program.getMemory().removeBlock(program.getMemory().getBlock(endSegAddr),
+                                                    monitor);
+                                            log.appendMsg("Removed overlapped area");
+
+                                        } else {
+                                            log.appendMsg("This condition is imposible, something is fucked up");
+                                        }
+
+                                    } else {
+                                        log.appendMsg("The colliding block is initialized, NOT touching it");
+                                    }
+                                }
+                            }
+                            log.appendMsg("Trying to create segment again...");
+                            var memBlock = program.getMemory().createInitializedBlock(blockName,
+                                    startSegAddr,
+                                    fileBytes, 0x00, curSeg.Length, false);
+                            memBlock.setPermissions(curSeg.isRead(), curSeg.isWrite(), curSeg.isExecute());
+                            memBlock.setVolatile(curSeg.isVolatile());
+                            memBlock.setSourceName("ESP32 Loader");
+                        }
 
                     } else {
                         /* memory block already exists... */
-                        MemoryBlock existingBlock = program.getMemory().getBlock(api.toAddr(curSeg.LoadAddress));
+                        MemoryBlock existingBlock = program.getMemory().getBlock(startSegAddr);
                         if (existingBlock != null) {
                             existingBlock.setName(imageName +
-                                                "_" +
-                                                curSeg.type.name() +
-                                                "_" +
-                                                Integer.toHexString(curSeg.LoadAddress));
+                                    "_" +
+                                    curSeg.type.name() +
+                                    "_" +
+                                    Integer.toHexString(curSeg.LoadAddress));
 
                             if (!existingBlock.isInitialized()) {
                                 program.getMemory().convertToInitialized(existingBlock, (byte) 0x0);
                             }
 
                             try {
-                                existingBlock.putBytes(api.toAddr(curSeg.LoadAddress), curSeg.Data);
+                                existingBlock.putBytes(startSegAddr, curSeg.Data);
                             } catch (Exception ex) {
                                 log.appendException(ex);
                             }
@@ -210,19 +299,20 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
                             existingBlock.setSourceName(existingBlock.getSourceName() + " + ESP32 Loader");
                         } else {
                             /*
-                            * whoa, there be dragons here, the block exists but doesn't contain our start
-                            * address... what?
-                            */
+                             * whoa, there be dragons here, the block exists but doesn't contain our start
+                             * address... what?
+                             */
                         }
                     }
 
                     /* Mark Instruction blocks as code */
                     if (curSeg.isCodeSegment()) {
-                        codeProp.add(api.toAddr(curSeg.LoadAddress), api.toAddr(curSeg.LoadAddress + curSeg.Length));
+                        codeProp.add(startSegAddr, endSegAddr);
                     }
 
                 } catch (Exception segEx) {
-                    log.appendMsg("Failed to load segment index " + x + " at 0x" + Integer.toHexString(curSeg.LoadAddress));
+                    log.appendMsg(
+                            "Failed to load segment index " + x + " at 0x" + Integer.toHexString(curSeg.LoadAddress));
                     log.appendException(segEx);
                 }
             }
@@ -268,9 +358,9 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
 
         // Search for the SVD file that matches the chip name
         Optional<ResourceFile> svdFile = svdFileList.stream()
-                                                    .filter(f -> f.getName()
-                                                                  .equals(chipId.name().toLowerCase() + ".svd"))
-                                                    .findFirst();
+                .filter(f -> f.getName()
+                        .equals(chipId.name().toLowerCase() + ".svd"))
+                .findFirst();
 
         if (svdFile.isEmpty()) {
             return;
@@ -314,7 +404,7 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
                 Element register = (Element) registers.item(x);
                 String registerName = register.getElementsByTagName("name").item(0).getTextContent();
                 String offsetString = register.getElementsByTagName("addressOffset")
-                                              .item(0).getTextContent();
+                        .item(0).getTextContent();
                 int offsetValue = Integer.decode(offsetString);
                 struct.replaceAtOffset(offsetValue, new UnsignedLongDataType(), 4, registerName, "");
 
@@ -341,7 +431,7 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
     private void registerPeripheralBlock(Program program, FlatProgramAPI api, int startAddr, int endAddr, String name)
             throws LockException, MemoryConflictException, AddressOverflowException {
         var block = program.getMemory()
-                           .createUninitializedBlock(name, api.toAddr(startAddr), endAddr - startAddr + 1, false);
+                .createUninitializedBlock(name, api.toAddr(startAddr), endAddr - startAddr + 1, false);
         block.setRead(true);
         block.setWrite(true);
         block.setVolatile(true);
@@ -349,7 +439,8 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
     }
 
     @Override
-    public List<Option> getDefaultOptions(ByteProvider provider, LoadSpec loadSpec, DomainObject domainObject, boolean isLoadIntoProgram) {
+    public List<Option> getDefaultOptions(ByteProvider provider, LoadSpec loadSpec, DomainObject domainObject,
+            boolean isLoadIntoProgram) {
         List<Option> list = new ArrayList<>();
 
         if (parsedFlash != null) {
