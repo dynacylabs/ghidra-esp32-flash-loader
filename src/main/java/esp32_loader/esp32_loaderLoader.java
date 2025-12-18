@@ -29,6 +29,7 @@ import ghidra.app.util.importer.MessageLog;
 import ghidra.app.util.opinion.AbstractLibrarySupportLoader;
 import ghidra.app.util.opinion.ElfLoader;
 import ghidra.app.util.opinion.LoadSpec;
+import ghidra.app.util.opinion.Loader.ImporterSettings;
 import ghidra.framework.Application;
 import ghidra.framework.model.DomainObject;
 import ghidra.framework.store.LockException;
@@ -46,6 +47,7 @@ import ghidra.program.model.mem.MemoryConflictException;
 import ghidra.program.model.symbol.SourceType;
 import ghidra.program.model.util.AddressSetPropertyMap;
 import ghidra.program.model.util.CodeUnitInsertionException;
+import ghidra.util.exception.CancelledException;
 import ghidra.util.exception.DuplicateNameException;
 import ghidra.util.exception.InvalidInputException;
 import ghidra.util.task.TaskMonitor;
@@ -109,8 +111,12 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
     }
 
     @Override
-    protected void load(ByteProvider provider, LoadSpec loadSpec, List<Option> options, Program program,
-            TaskMonitor monitor, MessageLog log) {
+    protected void load(Program program, ImporterSettings settings) throws IOException, CancelledException {
+        ByteProvider provider = settings.provider();
+        LoadSpec loadSpec = settings.loadSpec();
+        List<Option> options = settings.options();
+        TaskMonitor monitor = settings.monitor();
+        MessageLog log = settings.log();
         FlatProgramAPI api = new FlatProgramAPI(program);
 
         if (entryAppImage == null) {
@@ -345,8 +351,9 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
         ByteArrayProvider bap = new ByteArrayProvider(elfFileName, elfData);
         ElfLoader loader = new ElfLoader();
 
-        List<Option> elfOpts = loader.getDefaultOptions(bap, loadSpec, null, true);
-        loader.load(bap, loadSpec, elfOpts, program, monitor, log);
+        List<Option> elfOpts = loader.getDefaultOptions(bap, loadSpec, null, true, false);
+        ImporterSettings elfSettings = new ImporterSettings(bap, elfFileName, null, null, false, loadSpec, elfOpts, null, log, monitor);
+        loader.load(program, elfSettings);
     }
 
     protected void processSVD(Program program, FlatProgramAPI api, ESP32Chip chipId, MessageLog log) throws Exception {
@@ -439,8 +446,7 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
     }
 
     @Override
-    public List<Option> getDefaultOptions(ByteProvider provider, LoadSpec loadSpec, DomainObject domainObject,
-            boolean isLoadIntoProgram) {
+    public List<Option> getDefaultOptions(ByteProvider provider, LoadSpec loadSpec, DomainObject domainObject, boolean isLoadIntoProgram, boolean mirrorFsLayout) {
         List<Option> list = new ArrayList<>();
 
         if (parsedFlash != null) {
