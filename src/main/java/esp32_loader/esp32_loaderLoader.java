@@ -123,12 +123,25 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
             throw new RuntimeException("No ESP32 App Image found at the beginning of the file.");
         }
 
-        log.appendMsg("Loading ROM ELF Image from extension storage");
-        try {
-            processELF(program, entryAppImage.ChipId, loadSpec, monitor, log);
-        } catch (Exception ex) {
-            String exceptionTxt = ex.toString();
-            System.out.println(exceptionTxt);
+        // Check if ROM ELF loading is enabled
+        boolean loadRomElf = true;
+        for (Option option : options) {
+            if (option.getName().equals("Load ROM ELF")) {
+                loadRomElf = (Boolean) option.getValue();
+                break;
+            }
+        }
+
+        if (loadRomElf) {
+            log.appendMsg("Loading ROM ELF Image from extension storage");
+            try {
+                processELF(program, entryAppImage.ChipId, loadSpec, monitor, log);
+            } catch (Exception ex) {
+                String exceptionTxt = ex.toString();
+                System.out.println(exceptionTxt);
+            }
+        } else {
+            log.appendMsg("ROM ELF loading disabled by option");
         }
 
         if (entryAppImage.BootloaderInfo != null) {
@@ -156,12 +169,25 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
             processAppImage(program, entryAppImage, api, provider, monitor, log, "app");
         }
 
-        try {
-            log.appendMsg("Loading SVD file for peripherals");
-            /* Create Peripheral Device Memory Blocks */
-            processSVD(program, api, entryAppImage.ChipId, log);
-        } catch (Exception e) {
-            log.appendException(e);
+        // Check if SVD loading is enabled
+        boolean loadSvd = true;
+        for (Option option : options) {
+            if (option.getName().equals("Load SVD")) {
+                loadSvd = (Boolean) option.getValue();
+                break;
+            }
+        }
+
+        if (loadSvd) {
+            try {
+                log.appendMsg("Loading SVD file for peripherals");
+                /* Create Peripheral Device Memory Blocks */
+                processSVD(program, api, entryAppImage.ChipId, log);
+            } catch (Exception e) {
+                log.appendException(e);
+            }
+        } else {
+            log.appendMsg("SVD loading disabled by option");
         }
     }
 
@@ -441,14 +467,22 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
         if (parsedFlash != null) {
             list.add(new PartitionOption(parsedFlash));
         }
+        list.add(new Option("Load ROM ELF", true));
+        list.add(new Option("Load SVD", true));
 
         return list;
     }
 
     @Override
     public String validateOptions(ByteProvider provider, LoadSpec loadSpec, List<Option> options, Program program) {
-        if (options.getFirst().getValue() == null || options.getFirst().getValue().equals("")) {
-            return "App partition not found in image.";
+        // Find the partition option to validate
+        for (Option option : options) {
+            if (option.getName().equals("App Partition")) {
+                if (option.getValue() == null || option.getValue().equals("")) {
+                    return "App partition not found in image.";
+                }
+                break;
+            }
         }
 
         return null;
