@@ -168,11 +168,6 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
     private void processAppImage(Program program, ESP32AppImage imageToLoad, FlatProgramAPI api, ByteProvider provider,
             TaskMonitor monitor, MessageLog log, String imageName) {
         try {
-            AddressSetPropertyMap codeProp = program.getAddressSetPropertyMap("CodeMap");
-            if (codeProp == null) {
-                codeProp = program.createAddressSetPropertyMap("CodeMap");
-            }
-
             for (var x = 0; x < imageToLoad.SegmentCount; x++) {
                 var curSeg = imageToLoad.Segments.get(x);
 
@@ -310,12 +305,6 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
                              */
                         }
                     }
-
-                    /* Mark Instruction blocks as code */
-                    if (curSeg.isCodeSegment()) {
-                        codeProp.add(startSegAddr, endSegAddr);
-                    }
-
                 } catch (Exception segEx) {
                     log.appendMsg(
                             "Failed to load segment index " + x + " at 0x" + Integer.toHexString(curSeg.LoadAddress));
