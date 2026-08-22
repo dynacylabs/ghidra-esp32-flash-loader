@@ -490,18 +490,32 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
 
         var addr = space.getAddress(baseAddr);
         dtm.addDataType(struct, DataTypeConflictHandler.REPLACE_HANDLER);
-        listing.createData(addr, struct);
+        try {
+            listing.createData(addr, struct);
+        } catch (CodeUnitInsertionException e) {
+            // Overlapping peripherals (e.g. ESP32-S3 INTERRUPT_CORE0/1 share a base
+            // address) can only have one struct applied; keep the label regardless
+            log.appendMsg("Could not apply struct for " + peripheralName + " at " + addr + ": " + e.getMessage());
+        }
         symbolTable.createLabel(addr, peripheralName, namespace, SourceType.USER_DEFINED);
     }
 
     private void registerPeripheralBlock(Program program, FlatProgramAPI api, int startAddr, int endAddr, String name)
             throws LockException, MemoryConflictException, AddressOverflowException {
-        var block = program.getMemory()
-                .createUninitializedBlock(name, api.toAddr(startAddr), endAddr - startAddr + 1, false);
-        block.setRead(true);
-        block.setWrite(true);
-        block.setVolatile(true);
-        block.setSourceName("SVD Loader");
+        var memory = program.getMemory();
+        // Overlapping peripherals or already-loaded segments may cover part of this
+        // range; only create blocks for the parts that are still unmapped
+        var uncovered = new AddressSet(api.toAddr(startAddr), api.toAddr(endAddr)).subtract(memory);
+        var i = 0;
+        for (var range : uncovered) {
+            var block = memory.createUninitializedBlock(i == 0 ? name : name + "_" + i,
+                    range.getMinAddress(), range.getLength(), false);
+            block.setRead(true);
+            block.setWrite(true);
+            block.setVolatile(true);
+            block.setSourceName("SVD Loader");
+            i++;
+        }
     }
 
     @Override
