@@ -62,7 +62,9 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
@@ -400,39 +402,81 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
 
         NodeList peripherals = root.getElementsByTagName("peripheral");
 
+        // Index peripherals by name so derivedFrom references can be resolved
+        Map<String, Element> peripheralsByName = new HashMap<>();
         for (var x = 0; x < peripherals.getLength(); x++) {
-            processPeripheral(program, api, (Element) peripherals.item(x), log);
+            Element peripheral = (Element) peripherals.item(x);
+            NodeList names = peripheral.getElementsByTagName("name");
+            if (names.getLength() > 0) {
+                peripheralsByName.put(names.item(0).getTextContent(), peripheral);
+            }
+        }
+
+        for (var x = 0; x < peripherals.getLength(); x++) {
+            try {
+                processPeripheral(program, api, (Element) peripherals.item(x), peripheralsByName, log);
+            } catch (Exception e) {
+                log.appendException(e);
+            }
         }
     }
 
-    private void processPeripheral(Program program, FlatProgramAPI api, Element peripheral, MessageLog log)
+    private void processPeripheral(Program program, FlatProgramAPI api, Element peripheral,
+            Map<String, Element> peripheralsByName, MessageLog log)
             throws DuplicateNameException, InvalidInputException, CodeUnitInsertionException, LockException,
             MemoryConflictException, AddressOverflowException {
         String baseAddrString = ((Element) (peripheral.getElementsByTagName("baseAddress").item(0))).getTextContent();
         int baseAddr = Integer.decode(baseAddrString);
 
         String peripheralName = ((Element) (peripheral.getElementsByTagName("name").item(0))).getTextContent();
-        Element addressBlock = (Element) peripheral.getElementsByTagName("addressBlock").item(0);
+
+        // A derivedFrom peripheral inherits its addressBlock and registers from its parent
+        Element source = peripheral;
+        while (source.getElementsByTagName("addressBlock").getLength() == 0
+                && !source.getAttribute("derivedFrom").isEmpty()) {
+            Element parent = peripheralsByName.get(source.getAttribute("derivedFrom"));
+            if (parent == null || parent == source) {
+                break;
+            }
+            source = parent;
+        }
+
+        Element addressBlock = (Element) source.getElementsByTagName("addressBlock").item(0);
+        if (addressBlock == null) {
+            log.appendMsg("Skipping peripheral " + peripheralName + ": no addressBlock");
+            return;
+        }
         int size = Integer.decode(addressBlock.getElementsByTagName("size").item(0).getTextContent());
+
+        NodeList registers = source.getElementsByTagName("register");
+
+        // Some SVDs declare an addressBlock smaller than the span of the registers
+        for (var x = 0; x < registers.getLength(); x++) {
+            Element register = (Element) registers.item(x);
+            try {
+                int offsetValue = Integer.decode(register.getElementsByTagName("addressOffset")
+                        .item(0).getTextContent());
+                size = Math.max(size, offsetValue + 4);
+            } catch (Exception e) {
+                // malformed register; reported when populating the struct below
+            }
+        }
 
         registerPeripheralBlock(program, api, baseAddr, baseAddr + size - 1, peripheralName);
 
         StructureDataType struct = new StructureDataType(peripheralName, size);
 
-        NodeList registers = peripheral.getElementsByTagName("register");
-
-        try {
-            for (var x = 0; x < registers.getLength(); x++) {
-                Element register = (Element) registers.item(x);
+        for (var x = 0; x < registers.getLength(); x++) {
+            Element register = (Element) registers.item(x);
+            try {
                 String registerName = register.getElementsByTagName("name").item(0).getTextContent();
                 String offsetString = register.getElementsByTagName("addressOffset")
                         .item(0).getTextContent();
                 int offsetValue = Integer.decode(offsetString);
                 struct.replaceAtOffset(offsetValue, new UnsignedLongDataType(), 4, registerName, "");
-
+            } catch (Exception e) {
+                log.appendException(e);
             }
-        } catch (Exception e) {
-            log.appendException(e);
         }
 
         var dtm = program.getDataTypeManager();
