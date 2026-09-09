@@ -53,6 +53,7 @@ import ghidra.util.exception.InvalidInputException;
 import ghidra.util.task.TaskMonitor;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 import javax.xml.parsers.DocumentBuilder;
@@ -62,10 +63,18 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 
 public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
+    /** Width of an SVD register in bytes; the per-register {@code <size>} element is not honored. */
+    static final int REGISTER_BYTES = 4;
+
     ESP32Flash parsedFlash = null;
     ESP32AppImage entryAppImage = null;
 
@@ -400,39 +409,67 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
 
         NodeList peripherals = root.getElementsByTagName("peripheral");
 
+        // Index peripherals by name so derivedFrom references can be resolved
+        Map<String, Element> peripheralsByName = new HashMap<>();
         for (var x = 0; x < peripherals.getLength(); x++) {
-            processPeripheral(program, api, (Element) peripherals.item(x), log);
+            Element peripheral = (Element) peripherals.item(x);
+            String name = childText(peripheral, "name");
+            if (name != null) {
+                peripheralsByName.put(name, peripheral);
+            }
+        }
+
+        for (var x = 0; x < peripherals.getLength(); x++) {
+            try {
+                processPeripheral(program, api, (Element) peripherals.item(x), peripheralsByName, log);
+            } catch (Exception e) {
+                log.appendException(e);
+            }
         }
     }
 
-    private void processPeripheral(Program program, FlatProgramAPI api, Element peripheral, MessageLog log)
-            throws DuplicateNameException, InvalidInputException, CodeUnitInsertionException, LockException,
+    private void processPeripheral(Program program, FlatProgramAPI api, Element peripheral,
+            Map<String, Element> peripheralsByName, MessageLog log)
+            throws DuplicateNameException, InvalidInputException, LockException,
             MemoryConflictException, AddressOverflowException {
-        String baseAddrString = ((Element) (peripheral.getElementsByTagName("baseAddress").item(0))).getTextContent();
-        int baseAddr = Integer.decode(baseAddrString);
+        // The name is never inherited; a derived peripheral must declare its own
+        String peripheralName = childText(peripheral, "name");
+        if (peripheralName == null) {
+            log.appendMsg("Skipping peripheral without a name");
+            return;
+        }
 
-        String peripheralName = ((Element) (peripheral.getElementsByTagName("name").item(0))).getTextContent();
-        Element addressBlock = (Element) peripheral.getElementsByTagName("addressBlock").item(0);
-        int size = Integer.decode(addressBlock.getElementsByTagName("size").item(0).getTextContent());
+        // SVD inheritance is per element, so the baseAddress, the addressBlock and the
+        // registers are each taken from the nearest peripheral in the derivedFrom
+        // chain that has them
+        Element baseAddress = resolveRequired(peripheral, peripheralName, "baseAddress", peripheralsByName, log);
+        if (baseAddress == null) {
+            return;
+        }
+        int baseAddr = Integer.decode(baseAddress.getTextContent());
+
+        Element addressBlock = resolveRequired(peripheral, peripheralName, "addressBlock", peripheralsByName, log);
+        if (addressBlock == null) {
+            return;
+        }
+
+        NodeList registers = resolveInherited(peripheral, "register", peripheralsByName, log);
+        List<RegisterField> fields = registers == null ? List.of() : parseRegisters(registers, log);
+
+        int size = peripheralExtent(addressBlock, fields);
 
         registerPeripheralBlock(program, api, baseAddr, baseAddr + size - 1, peripheralName);
 
         StructureDataType struct = new StructureDataType(peripheralName, size);
 
-        NodeList registers = peripheral.getElementsByTagName("register");
-
-        try {
-            for (var x = 0; x < registers.getLength(); x++) {
-                Element register = (Element) registers.item(x);
-                String registerName = register.getElementsByTagName("name").item(0).getTextContent();
-                String offsetString = register.getElementsByTagName("addressOffset")
-                        .item(0).getTextContent();
-                int offsetValue = Integer.decode(offsetString);
-                struct.replaceAtOffset(offsetValue, new UnsignedLongDataType(), 4, registerName, "");
-
+        for (RegisterField field : fields) {
+            try {
+                struct.replaceAtOffset(field.offset(), UnsignedLongDataType.dataType, REGISTER_BYTES, field.name(), "");
+            } catch (Exception e) {
+                // peripheralExtent sizes the struct past every register, so this only
+                // guards malformed SVDs (e.g. a negative addressOffset)
+                log.appendException(e);
             }
-        } catch (Exception e) {
-            log.appendException(e);
         }
 
         var dtm = program.getDataTypeManager();
@@ -446,18 +483,148 @@ public class esp32_loaderLoader extends AbstractLibrarySupportLoader {
 
         var addr = space.getAddress(baseAddr);
         dtm.addDataType(struct, DataTypeConflictHandler.REPLACE_HANDLER);
-        listing.createData(addr, struct);
+        try {
+            listing.createData(addr, struct);
+        } catch (CodeUnitInsertionException e) {
+            // Overlapping peripherals (e.g. ESP32-S3 INTERRUPT_CORE0/1 share a base
+            // address) can only have one struct applied; keep the label regardless
+            log.appendMsg("Could not apply struct for " + peripheralName + " at " + addr + ": " + e.getMessage());
+        }
         symbolTable.createLabel(addr, peripheralName, namespace, SourceType.USER_DEFINED);
+    }
+
+    /** A register's name and byte offset from the peripheral base address. */
+    record RegisterField(String name, int offset) {
+    }
+
+    /**
+     * Parses the name and addressOffset of each register element, logging and
+     * skipping malformed entries so one bad register does not drop the rest.
+     */
+    static List<RegisterField> parseRegisters(NodeList registers, MessageLog log) {
+        List<RegisterField> fields = new ArrayList<>();
+        for (var x = 0; x < registers.getLength(); x++) {
+            Element register = (Element) registers.item(x);
+            try {
+                String name = childText(register, "name");
+                if (name == null) {
+                    log.appendMsg("Skipping register without a name");
+                    continue;
+                }
+                fields.add(new RegisterField(name, decodeChildInt(register, "addressOffset")));
+            } catch (Exception e) {
+                log.appendException(e);
+            }
+        }
+        return fields;
+    }
+
+    /**
+     * Returns the text of the first direct child element with the given tag, or null if
+     * absent. Deliberately not a descendant search: a peripheral missing its own
+     * {@code <name>} must not borrow one from a nested register.
+     */
+    static String childText(Element element, String tagName) {
+        for (Node child = element.getFirstChild(); child != null; child = child.getNextSibling()) {
+            if (child.getNodeType() == Node.ELEMENT_NODE && child.getNodeName().equals(tagName)) {
+                return child.getTextContent();
+            }
+        }
+        return null;
+    }
+
+    /** Decodes the integer content of the first child element with the given tag. */
+    static int decodeChildInt(Element element, String tagName) {
+        String text = childText(element, tagName);
+        if (text == null) {
+            throw new IllegalArgumentException("Missing " + tagName + " element");
+        }
+        return Integer.decode(text);
+    }
+
+    /** As above, but returns defaultValue when the element has no such child. */
+    static int decodeChildInt(Element element, String tagName, int defaultValue) {
+        String text = childText(element, tagName);
+        return text == null ? defaultValue : Integer.decode(text);
+    }
+
+    /**
+     * Returns the number of bytes the peripheral occupies from its base address. The
+     * addressBlock offset is relative to the base address, so the block reaches to
+     * offset + size, and some SVDs declare a block smaller than the span of the
+     * registers, whose addressOffset is relative to the base address as well.
+     */
+    static int peripheralExtent(Element addressBlock, List<RegisterField> fields) {
+        int extent = decodeChildInt(addressBlock, "size") + decodeChildInt(addressBlock, "offset", 0);
+
+        for (RegisterField field : fields) {
+            extent = Math.max(extent, field.offset() + REGISTER_BYTES);
+        }
+        return extent;
+    }
+
+    /**
+     * Walks the derivedFrom chain from the given peripheral and returns the requested
+     * elements from the nearest peripheral that declares them, or null if none does.
+     * Elements already visited terminate the walk so that a cycle cannot hang the import.
+     * The descendant search is intentional here: registers live under a nested
+     * {@code <registers>} element, not as direct children of the peripheral.
+     */
+    static NodeList resolveInherited(Element peripheral, String tagName, Map<String, Element> peripheralsByName,
+            MessageLog log) {
+        // DOM elements do not override equals, so a HashSet tracks visits by identity
+        Set<Element> visited = new HashSet<>();
+        Element source = peripheral;
+        while (source != null) {
+            if (!visited.add(source)) {
+                log.appendMsg("Cyclic derivedFrom chain at peripheral "
+                        + Objects.requireNonNullElse(childText(source, "name"), "<unnamed>")
+                        + " while resolving " + tagName);
+                return null;
+            }
+            NodeList matches = source.getElementsByTagName(tagName);
+            if (matches.getLength() > 0) {
+                return matches;
+            }
+            String derivedFrom = source.getAttribute("derivedFrom");
+            if (derivedFrom.isEmpty()) {
+                return null;
+            }
+            source = peripheralsByName.get(derivedFrom);
+        }
+        return null;
+    }
+
+    /**
+     * The first element with the given tag resolved through the derivedFrom chain, or
+     * null — with the skip logged — when no peripheral in the chain declares it.
+     */
+    static Element resolveRequired(Element peripheral, String peripheralName, String tagName,
+            Map<String, Element> peripheralsByName, MessageLog log) {
+        NodeList matches = resolveInherited(peripheral, tagName, peripheralsByName, log);
+        if (matches == null) {
+            log.appendMsg("Skipping peripheral " + peripheralName + ": no " + tagName);
+            return null;
+        }
+        return (Element) matches.item(0);
     }
 
     private void registerPeripheralBlock(Program program, FlatProgramAPI api, int startAddr, int endAddr, String name)
             throws LockException, MemoryConflictException, AddressOverflowException {
-        var block = program.getMemory()
-                .createUninitializedBlock(name, api.toAddr(startAddr), endAddr - startAddr + 1, false);
-        block.setRead(true);
-        block.setWrite(true);
-        block.setVolatile(true);
-        block.setSourceName("SVD Loader");
+        var memory = program.getMemory();
+        // Overlapping peripherals or already-loaded segments may cover part of this
+        // range; only create blocks for the parts that are still unmapped
+        var uncovered = new AddressSet(api.toAddr(startAddr), api.toAddr(endAddr)).subtract(memory);
+        var fragment = 0;
+        for (var range : uncovered) {
+            var block = memory.createUninitializedBlock(fragment == 0 ? name : name + "_" + fragment,
+                    range.getMinAddress(), range.getLength(), false);
+            block.setRead(true);
+            block.setWrite(true);
+            block.setVolatile(true);
+            block.setSourceName("SVD Loader");
+            fragment++;
+        }
     }
 
     @Override
