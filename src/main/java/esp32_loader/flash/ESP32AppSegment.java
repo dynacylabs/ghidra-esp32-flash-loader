@@ -155,11 +155,8 @@ public class ESP32AppSegment {
 
     public boolean isVolatile() {
         return this.type != null &&
-               (this.type == SegmentType.IRAM ||
-                this.type == SegmentType.RTC_RAM ||
+               (this.type == SegmentType.RTC_RAM ||
                 this.type == SegmentType.EXT_IRAM ||
-                this.type == SegmentType.IRAM0 ||
-                this.type == SegmentType.IRAM1 ||
                 this.type == SegmentType.DRAM0 ||
                 this.type == SegmentType.DRAM1);
     }
